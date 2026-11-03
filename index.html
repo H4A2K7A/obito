@@ -1,0 +1,399 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>회오리 사목</title>
+<style>
+:root{--bg:#f6f3ee;--card:#fff;--ink:#222;--muted:#777;--accent:#3d7a5a;--p1:#2f5fb3;--p2:#e0a21b;--line:#e2ddd4;--boardbg:#efe9df;--hl:rgba(61,122,90,.12);--hl2:rgba(61,122,90,.25);--win:rgba(224,162,27,.3)}
+@media (prefers-color-scheme:dark){:root{--bg:#1b1a19;--card:#262524;--ink:#eee;--muted:#999;--line:#3a3836;--boardbg:#2e2c2a;--p1:#5b8ae0}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:system-ui,-apple-system,"Apple SD Gothic Neo","Malgun Gothic",sans-serif}
+main{max-width:520px;margin:0 auto;padding:24px 16px}
+h1{font-size:28px;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 24px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px;margin-bottom:16px}
+button{font:inherit;border:0;border-radius:8px;padding:12px 16px;background:var(--accent);color:#fff;cursor:pointer;width:100%}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button:disabled{opacity:.5;cursor:default}
+input{font:inherit;width:100%;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);text-transform:uppercase;letter-spacing:4px;text-align:center;font-size:20px;margin-bottom:8px}
+.code{font-size:40px;letter-spacing:8px;font-weight:700;text-align:center;margin:8px 0}
+.status{color:var(--muted);text-align:center;font-size:14px;min-height:20px}
+.hidden{display:none!important}
+.bar{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-size:14px}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:middle}
+#board{position:relative;display:grid;grid-template-columns:repeat(4,1fr);gap:0;margin:0 auto;max-width:360px;aspect-ratio:1;background:var(--boardbg);border-radius:14px;padding:0;overflow:hidden}
+.cell{all:unset;box-sizing:border-box;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;cursor:default;position:relative}
+.cell .arrow{color:var(--muted);opacity:.45;font-size:22px}
+.cell.target{cursor:pointer;background:var(--hl)}
+.cell.target:hover{background:var(--hl2)}
+.cell.sel{outline:3px solid var(--accent);outline-offset:-3px}
+.cell.win{background:var(--win)}
+.stones{position:absolute;inset:0;pointer-events:none}
+.stone{position:absolute;width:25%;height:25%;transition:left .55s ease,top .55s ease}
+.stone::after{content:"";position:absolute;inset:14%;border-radius:50%;box-shadow:inset 0 -4px 0 rgba(0,0,0,.2),0 2px 4px rgba(0,0,0,.25)}
+.stone.p0::after{background:var(--p1)}
+.stone.p1::after{background:var(--p2)}
+.stone.fresh::after{outline:3px solid var(--ink);outline-offset:2px}
+.controls{display:flex;gap:8px;margin-top:16px}
+.turn{font-weight:600;text-align:center;margin:12px 0}
+</style>
+</head>
+<body>
+<main>
+  <h1>회오리 사목</h1>
+  <p class="sub">돌을 두고, 판을 돌려 네 개를 잇는 2인 게임</p>
+
+  <!-- 로비 -->
+  <section id="lobby">
+    <div class="card">
+      <button id="btnCreate">방 만들기</button>
+    </div>
+    <div class="card">
+      <input id="joinCode" maxlength="6" placeholder="초대코드" autocomplete="off">
+      <button id="btnJoin" class="ghost">코드로 입장</button>
+    </div>
+    <p class="status" id="lobbyStatus"></p>
+  </section>
+
+  <!-- 대기실 -->
+  <section id="waiting" class="hidden">
+    <div class="card">
+      <p class="status">친구에게 이 코드를 알려주세요</p>
+      <div class="code" id="myCode">------</div>
+      <button id="btnCopy" class="ghost">초대 링크 복사</button>
+    </div>
+    <p class="status" id="waitStatus">상대를 기다리는 중…</p>
+  </section>
+
+  <!-- 게임 -->
+  <section id="game" class="hidden">
+    <div class="bar">
+      <span><span class="dot" id="meDot"></span><span id="meLabel"></span></span>
+      <span id="connLabel"></span>
+    </div>
+    <div class="card">
+      <div class="turn" id="turnLabel"></div>
+      <div id="board"></div>
+      <p class="status" id="gameMsg"></p>
+      <div class="controls">
+        <button id="btnSkip" class="ghost hidden">밀기 건너뛰기</button>
+        <button id="btnSpin" disabled>판 돌리기</button>
+      </div>
+    </div>
+    <button id="btnRestart" class="ghost hidden">다시 하기</button>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+<script>
+/* =========================================================================
+ *  1) 게임 규칙 — 회오리 사목
+ *     4x4 판. 한 턴: (상대 돌 1개를 옆 빈칸으로 밀기, 선택) → 내 돌 착수 → 판 돌리기.
+ *     판을 돌리면 모든 돌이 화살표를 따라 한 칸씩 이동(바깥·안쪽 고리 모두 반시계).
+ *     돌린 직후 가로·세로·대각선 4개가 이어지면 승리. 둘 다 이어지면 무승부.
+ *     판이 가득 차면 돌리기만 번갈아 최대 5번 더 하고, 그래도 없으면 무승부.
+ * ========================================================================= */
+const N = 4;
+// NEXT[i] = 판을 돌렸을 때 i번 칸의 돌이 가는 칸 (행*4+열)
+const NEXT = [4,0,1,2, 8,9,5,3, 12,10,6,7, 13,14,15,11];
+const ARROW = ["↙","←","←","↖", "↓","↙","↖","↑", "↓","↘","↗","↑", "↘","→","→","↗"];
+const LINES = (() => {
+  const L = [];
+  for (let r = 0; r < N; r++) L.push([0,1,2,3].map(c => r*N + c));
+  for (let c = 0; c < N; c++) L.push([0,1,2,3].map(r => r*N + c));
+  L.push([0,5,10,15], [3,6,9,12]);
+  return L;
+})();
+const EXTRA_SPINS = 5;
+const neighbors = i => {
+  const r = Math.floor(i / N), c = i % N, out = [];
+  if (r > 0) out.push(i - N); if (r < N-1) out.push(i + N);
+  if (c > 0) out.push(i - 1); if (c < N-1) out.push(i + 1);
+  return out;
+};
+
+const Game = {
+  setup(first = 0) {
+    return { cells: Array(16).fill(null), turn: first, phase: "place", winner: null,
+             line: null, spins: 0, extra: 0, prev: null, lastMove: null, lastPlace: null };
+  },
+
+  // 상대 돌 중 밀 수 있는 것이 있는지
+  canPush(s, p) {
+    return s.cells.some((v, i) => v === 1 - p && neighbors(i).some(j => s.cells[j] === null));
+  },
+
+  startTurn(s) {
+    const full = s.cells.every(v => v !== null);
+    if (full) s.phase = "spin";
+    else s.phase = this.canPush(s, s.turn) ? "push" : "place";
+  },
+
+  apply(state, a, p) {
+    if (state.winner !== null || state.turn !== p) return null;
+    const s = structuredClone(state);
+    s.prev = null;
+    if (a.type === "push" && s.phase === "push") {
+      if (s.cells[a.from] !== 1 - p || s.cells[a.to] !== null || !neighbors(a.from).includes(a.to)) return null;
+      s.cells[a.to] = s.cells[a.from]; s.cells[a.from] = null;
+      s.lastMove = [a.from, a.to]; s.phase = "place";
+      return s;
+    }
+    if (a.type === "skip" && s.phase === "push") { s.lastMove = null; s.phase = "place"; return s; }
+    if (a.type === "place" && s.phase === "place") {
+      if (s.cells[a.index] !== null) return null;
+      s.cells[a.index] = p; s.lastPlace = a.index; s.phase = "spin";
+      return s;
+    }
+    if (a.type === "spin" && s.phase === "spin") {
+      const wasFull = state.cells.every(v => v !== null) && state.phase === "spin" && state.lastPlace === null;
+      s.prev = state.cells.slice();
+      const next = Array(16).fill(null);
+      s.cells.forEach((v, i) => { next[NEXT[i]] = v; });
+      s.cells = next; s.spins++;
+      if (s.lastPlace !== null) s.lastPlace = NEXT[s.lastPlace];
+      if (s.lastMove) s.lastMove = s.lastMove.map(i => NEXT[i]);
+      if (wasFull) s.extra++;
+      const wins = [0, 1].map(q => LINES.find(l => l.every(i => s.cells[i] === q)) || null);
+      if (wins[0] && wins[1]) { s.winner = -1; s.line = [...wins[0], ...wins[1]]; }
+      else if (wins[0] || wins[1]) { s.winner = wins[0] ? 0 : 1; s.line = wins[0] || wins[1]; }
+      else if (s.cells.every(v => v !== null) && s.extra >= EXTRA_SPINS) s.winner = -1;
+      if (s.winner === null) {
+        s.turn = 1 - p; s.lastPlace = null; s.lastMove = null;
+        this.startTurn(s);
+      }
+      return s;
+    }
+    return null;
+  },
+};
+
+/* ---- 화면 그리기 ---- */
+let sel = null;          // 밀기 단계에서 고른 상대 돌 (내 화면에서만)
+let animatedSpin = -1;   // 회전 애니메이션을 이미 보여준 spins 값
+
+function cellXY(i) { return { x: (i % N) * 25, y: Math.floor(i / N) * 25 }; }
+
+function renderBoard(state, me, send) {
+  const el = $("board");
+  const myTurn = state.turn === me && state.winner === null;
+  if (state.phase !== "push" || !myTurn) sel = null;
+  el.innerHTML = "";
+
+  // 칸 + 화살표
+  for (let i = 0; i < 16; i++) {
+    const d = document.createElement("button");
+    d.className = "cell"; d.dataset.i = i;
+    d.innerHTML = `<span class="arrow">${ARROW[i]}</span>`;
+    let target = false;
+    if (myTurn && state.phase === "push") {
+      if (sel === null) target = state.cells[i] === 1 - me && neighbors(i).some(j => state.cells[j] === null);
+      else target = state.cells[i] === null && neighbors(sel).includes(i);
+    } else if (myTurn && state.phase === "place") target = state.cells[i] === null;
+    if (target) d.classList.add("target");
+    if (sel === i) d.classList.add("sel");
+    if (state.line && state.line.includes(i)) d.classList.add("win");
+    d.onclick = () => {
+      if (!myTurn) return;
+      if (state.phase === "push") {
+        if (sel === null) { if (target) { sel = i; draw(); } }
+        else if (i === sel) { sel = null; draw(); }
+        else if (target) { const from = sel; sel = null; send({ type: "push", from, to: i }); }
+        else if (state.cells[i] === 1 - me) { sel = i; draw(); }
+      } else if (state.phase === "place" && target) send({ type: "place", index: i });
+    };
+    el.append(d);
+  }
+
+  // 돌 레이어 (회전 애니메이션)
+  const layer = document.createElement("div"); layer.className = "stones";
+  const animate = state.prev && animatedSpin !== state.spins;
+  const src = animate ? state.prev : state.cells;
+  src.forEach((v, i) => {
+    if (v === null) return;
+    const s = document.createElement("div");
+    s.className = "stone p" + v;
+    if (!animate && state.lastPlace === i) s.classList.add("fresh");
+    const a = cellXY(i); s.style.left = a.x + "%"; s.style.top = a.y + "%";
+    s.dataset.to = NEXT[i];
+    layer.append(s);
+  });
+  el.append(layer);
+  if (animate) {
+    animatedSpin = state.spins;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      layer.querySelectorAll(".stone").forEach(s => {
+        const b = cellXY(+s.dataset.to); s.style.left = b.x + "%"; s.style.top = b.y + "%";
+      });
+    }));
+  }
+
+  // 조작 버튼과 안내
+  const skip = $("btnSkip"), spin = $("btnSpin");
+  skip.classList.toggle("hidden", !(myTurn && state.phase === "push"));
+  spin.disabled = !(myTurn && state.phase === "spin");
+  skip.onclick = () => { sel = null; send({ type: "skip" }); };
+  spin.onclick = () => send({ type: "spin" });
+
+  const full = state.cells.every(v => v !== null);
+  let hint = "";
+  if (state.winner !== null) hint = "";
+  else if (!myTurn) hint = "상대가 두는 중이에요";
+  else if (state.phase === "push") hint = sel === null ? "① 밀어낼 상대 돌을 고르세요 (건너뛰어도 돼요)" : "① 옮길 옆 빈칸을 고르세요";
+  else if (state.phase === "place") hint = "② 내 돌을 둘 빈칸을 고르세요";
+  else if (full && state.lastPlace === null) hint = `판이 가득 찼어요. 판을 돌리세요 (남은 횟수 ${EXTRA_SPINS - state.extra})`;
+  else hint = "③ 판 돌리기 버튼을 누르세요";
+  $("gameMsg").textContent = hint;
+}
+
+/* =========================================================================
+ *  2) 네트워크 — 방장(host)이 상태의 기준이 되고, 참가자(guest)는 행동만 보냅니다.
+ *     기본은 PeerJS(WebRTC). 주소에 ?local=1 을 붙이면 같은 브라우저 탭끼리 테스트.
+ * ========================================================================= */
+const PREFIX = "obito-room-";
+const LOCAL = new URLSearchParams(location.search).has("local");
+const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 헷갈리는 0/O/1/I 제외
+
+function makeCode() {
+  const a = new Uint32Array(6); crypto.getRandomValues(a);
+  return [...a].map(x => CODE_CHARS[x % CODE_CHARS.length]).join("");
+}
+
+// 연결 하나를 { send, onMessage, onClose } 형태로 감쌉니다.
+function wrapPeerConn(conn) {
+  const h = { msg: () => {}, close: () => {} };
+  conn.on("data", d => h.msg(d));
+  conn.on("close", () => h.close());
+  conn.on("error", () => h.close());
+  return { send: d => conn.open && conn.send(d), onMessage: f => h.msg = f, onClose: f => h.close = f };
+}
+
+const Net = {
+  // 방 만들기: 코드 발급 후 상대가 들어오면 onGuest(conn) 호출
+  host(code, onReady, onGuest, onError) {
+    if (LOCAL) return localHost(code, onReady, onGuest);
+    const peer = new Peer(PREFIX + code);
+    peer.on("open", () => onReady());
+    peer.on("connection", c => c.on("open", () => onGuest(wrapPeerConn(c))));
+    peer.on("error", e => onError(e.type === "unavailable-id" ? "taken" : e.type));
+    return peer;
+  },
+  // 코드로 입장
+  join(code, onConn, onError) {
+    if (LOCAL) return localJoin(code, onConn, onError);
+    const peer = new Peer();
+    peer.on("open", () => {
+      const c = peer.connect(PREFIX + code, { reliable: true });
+      const t = setTimeout(() => onError("not-found"), 8000);
+      c.on("open", () => { clearTimeout(t); onConn(wrapPeerConn(c)); });
+    });
+    peer.on("error", e => onError(e.type === "peer-unavailable" ? "not-found" : e.type));
+    return peer;
+  },
+};
+
+// 테스트용: BroadcastChannel로 같은 브라우저 탭끼리 연결
+function localHost(code, onReady, onGuest) {
+  const ch = new BroadcastChannel(PREFIX + code); let joined = false;
+  ch.onmessage = e => {
+    if (e.data.t === "hello" && !joined) { joined = true; ch.postMessage({ t: "welcome" }); onGuest(localConn(ch, "h")); }
+  };
+  setTimeout(onReady, 0);
+}
+function localJoin(code, onConn, onError) {
+  const ch = new BroadcastChannel(PREFIX + code);
+  const t = setTimeout(() => onError("not-found"), 3000);
+  ch.onmessage = e => { if (e.data.t === "welcome") { clearTimeout(t); onConn(localConn(ch, "g")); } };
+  ch.postMessage({ t: "hello" });
+}
+function localConn(ch, me) {
+  const h = { msg: () => {} };
+  ch.onmessage = e => { if (e.data.t === "d" && e.data.from !== me) h.msg(e.data.d); };
+  return { send: d => ch.postMessage({ t: "d", from: me, d }), onMessage: f => h.msg = f, onClose: () => {} };
+}
+
+/* =========================================================================
+ *  3) 화면 흐름
+ * ========================================================================= */
+const $ = id => document.getElementById(id);
+const show = id => ["lobby","waiting","game"].forEach(s => $(s).classList.toggle("hidden", s !== id));
+const color = p => p === 0 ? "var(--p1)" : "var(--p2)";
+const NAMES = ["파랑 (방장)", "노랑 (참가자)"];
+let games = 0;
+
+let me = null, state = null, conn = null;
+
+function startGame(c, role) {
+  conn = c; me = role;
+  $("meDot").style.background = color(me);
+  $("meLabel").textContent = "나: " + NAMES[me];
+  $("connLabel").textContent = "연결됨";
+  conn.onClose(() => { $("connLabel").textContent = "상대 연결 끊김"; });
+  if (me === 0) {
+    state = Game.setup();
+    conn.onMessage(m => { if (m.type === "action") hostApply(m.action, 1); else if (m.type === "restart") restart(); });
+    conn.send({ type: "state", state });
+  } else {
+    conn.onMessage(m => { if (m.type === "state") { state = m.state; draw(); } });
+  }
+  show("game"); draw();
+}
+
+function hostApply(action, player) {
+  const next = Game.apply(state, action, player);
+  if (!next) return;
+  state = next; conn.send({ type: "state", state }); draw();
+}
+
+function send(action) {
+  if (!state || state.turn !== me || state.winner !== null) return;
+  if (me === 0) hostApply(action, 0); else conn.send({ type: "action", action });
+}
+
+function restart() { games++; state = Game.setup(games % 2); conn.send({ type: "state", state }); draw(); }
+
+function draw() {
+  if (!state) { $("turnLabel").textContent = "게임 준비 중…"; return; }
+  renderBoard(state, me, send);
+  const over = state.winner !== null;
+  $("turnLabel").textContent = over
+    ? (state.winner === -1 ? "무승부" : state.winner === me ? "승리!" : "패배")
+    : (state.turn === me ? "내 차례" : "상대 차례");
+  if (over) $("gameMsg").textContent = state.winner === -1 ? "둘 다 이어졌거나 판이 막혔어요" : "";
+  $("btnRestart").classList.toggle("hidden", !over);
+}
+
+$("btnRestart").onclick = () => { if (me === 0) restart(); else conn.send({ type: "restart" }); };
+
+$("btnCreate").onclick = () => {
+  const code = makeCode();
+  $("btnCreate").disabled = true; $("lobbyStatus").textContent = "방을 만드는 중…";
+  Net.host(code,
+    () => { $("myCode").textContent = code; show("waiting"); },
+    c => startGame(c, 0),
+    err => { $("btnCreate").disabled = false; $("lobbyStatus").textContent = err === "taken" ? "다시 시도해주세요" : "서버 연결 실패: " + err; });
+};
+
+$("btnCopy").onclick = async () => {
+  const u = new URL(location.href); u.searchParams.set("code", $("myCode").textContent);
+  try { await navigator.clipboard.writeText(u.toString()); $("waitStatus").textContent = "링크를 복사했어요. 상대를 기다리는 중…"; }
+  catch { $("waitStatus").textContent = u.toString(); }
+};
+
+function join() {
+  const code = $("joinCode").value.trim().toUpperCase();
+  if (code.length !== 6) { $("lobbyStatus").textContent = "6자리 코드를 입력해주세요"; return; }
+  $("btnJoin").disabled = true; $("lobbyStatus").textContent = "입장하는 중…";
+  Net.join(code, c => startGame(c, 1),
+    err => { $("btnJoin").disabled = false; $("lobbyStatus").textContent = err === "not-found" ? "그 코드의 방을 찾을 수 없어요" : "연결 실패: " + err; });
+}
+$("btnJoin").onclick = join;
+$("joinCode").onkeydown = e => { if (e.key === "Enter") join(); };
+
+// 초대 링크(?code=XXXXXX)로 들어오면 코드 자동 입력
+const pre = new URLSearchParams(location.search).get("code");
+if (pre) $("joinCode").value = pre;
+</script>
+</body>
+</html>
